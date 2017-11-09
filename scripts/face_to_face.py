@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 #encoding: utf8
-import rospy, cv2
+import rospy, cv2, math                         #mathを追加
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
+from geometry_msgs.msg import Twist             #追加
+from std_srvs.srv import Trigger                #追加
 
 class FaceToFace():
     def __init__(self):
@@ -10,8 +12,14 @@ class FaceToFace():
         self.pub = rospy.Publisher("face", Image, queue_size=1)
         self.bridge = CvBridge()
         self.image_org = None
+        ###以下のモータの制御に関する処理を追加###
+        self.cmd_vel = rospy.Publisher('/cmd_vel', Twist, queue_size=1)
+        rospy.wait_for_service('/motor_on')
+        rospy.wait_for_service('/motor_off')
+        rospy.on_shutdown(rospy.ServiceProxy('/motor_off', Trigger).call)
+        rospy.ServiceProxy('/motor_on', Trigger).call()
 
-    def monitor(self,rect,org):                                 #このメソッドを追加
+    def monitor(self,rect,org):
         if rect is not None:
             cv2.rectangle(org,tuple(rect[0:2]),tuple(rect[0:2]+rect[2:4]),(0,255,255),4)
        
@@ -31,9 +39,8 @@ class FaceToFace():
     
         gimg = cv2.cvtColor(org,cv2.COLOR_BGR2GRAY)
         classifier = "/home/ubuntu/opencv-3.2.0/data/haarcascades/haarcascade_frontalface_default.xml"
-        #cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
         cascade = cv2.CascadeClassifier(classifier)
-	face = cascade.detectMultiScale(gimg,1.1,1,cv2.CASCADE_FIND_BIGGEST_OBJECT)
+        face = cascade.detectMultiScale(gimg,1.1,1,cv2.CASCADE_FIND_BIGGEST_OBJECT)
     
         if len(face) == 0:    #len(face)...以下を次のように書き換え
             self.monitor(None,org)
@@ -43,11 +50,28 @@ class FaceToFace():
         self.monitor(r,org)   
         return r  
 
+    def rot_vel(self):        #このメソッドを追加
+        r = self.detect_face()
+        if r is None:
+            return 0.0
+           
+        wid = self.image_org.shape[1]/2   #画像の幅の半分の値
+        pos_x_rate = (r[0] + r[2]/2 - wid)*1.0/wid
+        rot = -0.25*pos_x_rate*math.pi    #画面のキワに顔がある場合にpi/4[rad/s]に
+        rospy.loginfo("detected %f",rot)
+        return rot
+
+    def control(self):         #新たにcontrolメソッドを作る
+        m = Twist()
+        m.linear.x = 0.0
+        m.angular.z = self.rot_vel()
+        self.cmd_vel.publish(m)
+
 if __name__ == '__main__':
     rospy.init_node('face_to_face')
     fd = FaceToFace()
 
     rate = rospy.Rate(10)
     while not rospy.is_shutdown():
-        rospy.loginfo(fd.detect_face())
+        fd.control()
         rate.sleep()
